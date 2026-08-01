@@ -351,6 +351,195 @@ describe('convertOpenAIMessages', () => {
     expect((result[0] as any).reasoning).toBeUndefined();
     expect((result[0] as any).reasoning_content).toBe('some reasoning content');
   });
+
+  describe('tool messages with image parts', () => {
+    it('should flatten the tool message to text and re-attach images as a user message', async () => {
+      vi.mocked(parseDataUri).mockReturnValue({ type: 'url', base64: null, mimeType: null });
+
+      const messages = [
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            { id: 'call_1', type: 'function', function: { name: 'readFile', arguments: '{}' } },
+          ],
+        },
+        {
+          role: 'tool',
+          tool_call_id: 'call_1',
+          content: [
+            { type: 'text', text: '[Image: cat.png]' },
+            { type: 'image_url', image_url: { url: 'https://files.example.com/cat.png' } },
+          ],
+        },
+        { role: 'user', content: 'what do you see?' },
+      ] as OpenAI.ChatCompletionMessageParam[];
+
+      const result = await convertOpenAIMessages(messages);
+
+      expect(result).toEqual([
+        messages[0],
+        // Tool message content must be text-only for the OpenAI API.
+        { role: 'tool', tool_call_id: 'call_1', content: '[Image: cat.png]' },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Image output of tool call call_1:' },
+            { type: 'image_url', image_url: { url: 'https://files.example.com/cat.png' } },
+          ],
+        },
+        { role: 'user', content: 'what do you see?' },
+      ]);
+    });
+
+    it('should keep the tool batch contiguous when multiple tool results carry images', async () => {
+      vi.mocked(parseDataUri).mockReturnValue({ type: 'url', base64: null, mimeType: null });
+
+      const messages = [
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            { id: 'call_1', type: 'function', function: { name: 'readFile', arguments: '{}' } },
+            { id: 'call_2', type: 'function', function: { name: 'readFile', arguments: '{}' } },
+          ],
+        },
+        {
+          role: 'tool',
+          tool_call_id: 'call_1',
+          content: [{ type: 'image_url', image_url: { url: 'https://files.example.com/a.png' } }],
+        },
+        {
+          role: 'tool',
+          tool_call_id: 'call_2',
+          content: 'plain text result',
+        },
+      ] as OpenAI.ChatCompletionMessageParam[];
+
+      const result = await convertOpenAIMessages(messages);
+
+      // No user message may interleave between the tool results of one batch.
+      expect(result.map((m) => m.role)).toEqual(['assistant', 'tool', 'tool', 'user']);
+      expect(result[1]).toEqual({
+        role: 'tool',
+        tool_call_id: 'call_1',
+        content: '[Image output attached below]',
+      });
+      expect(result[2]).toEqual(messages[2]);
+      expect(result[3]).toEqual({
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Image output of tool call call_1:' },
+          { type: 'image_url', image_url: { url: 'https://files.example.com/a.png' } },
+        ],
+      });
+    });
+  });
+
+  describe('DeepSeek reasoning_content compatibility', () => {
+    it('should derive reasoning_content from reasoning.content for deepseek models', async () => {
+      const messages = [
+        {
+          role: 'assistant',
+          content: 'Answer with tool call',
+          reasoning: { content: 'planned tool invocation', duration: 100 },
+          tool_calls: [
+            { id: 'call_1', type: 'function', function: { name: 'search', arguments: '{}' } },
+          ],
+        },
+      ] as any;
+
+      const result = await convertOpenAIMessages(messages, { model: 'deepseek-v4-flash' });
+
+      expect((result[0] as any).reasoning_content).toBe('planned tool invocation');
+      expect((result[0] as any).tool_calls).toHaveLength(1);
+      expect((result[0] as any).reasoning).toBeUndefined();
+    });
+
+    it('should force empty reasoning_content for deepseek-v4 thinking-mode assistant messages without reasoning', async () => {
+      const messages = [
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            { id: 'call_1', type: 'function', function: { name: 'search', arguments: '{}' } },
+          ],
+        },
+      ] as any;
+
+      const result = await convertOpenAIMessages(messages, { model: 'deepseek-v4-pro' });
+
+      expect((result[0] as any).reasoning_content).toBe('');
+    });
+
+    it('should force empty reasoning_content for deepseek-reasoner', async () => {
+      const messages = [{ role: 'assistant', content: 'Hi' }] as any;
+
+      const result = await convertOpenAIMessages(messages, { model: 'deepseek-reasoner' });
+
+      expect((result[0] as any).reasoning_content).toBe('');
+    });
+
+    it('should match provider-prefixed deepseek model ids (e.g. Deepseek/deepseek-v4-pro)', async () => {
+      const messages = [{ role: 'assistant', content: 'Hi' }] as any;
+
+      const result = await convertOpenAIMessages(messages, {
+        model: 'Deepseek/deepseek-v4-pro',
+      });
+
+      expect((result[0] as any).reasoning_content).toBe('');
+    });
+
+    it('should not force reasoning_content for non-thinking deepseek models', async () => {
+      const messages = [{ role: 'assistant', content: 'Hi' }] as any;
+
+      const result = await convertOpenAIMessages(messages, { model: 'deepseek-chat' });
+
+      expect((result[0] as any).reasoning_content).toBeUndefined();
+    });
+
+    it('should leave non-deepseek models untouched', async () => {
+      const messages = [
+        {
+          role: 'assistant',
+          content: 'Hi',
+          reasoning: { content: 'unrelated', duration: 10 },
+        },
+      ] as any;
+
+      const result = await convertOpenAIMessages(messages, { model: 'gpt-4o-mini' });
+
+      expect((result[0] as any).reasoning_content).toBeUndefined();
+      expect((result[0] as any).reasoning).toBeUndefined();
+    });
+
+    it('should not touch non-assistant messages', async () => {
+      const messages = [
+        { role: 'user', content: 'hello' },
+        { role: 'tool', content: '{}', tool_call_id: 'call_1' },
+      ] as any;
+
+      const result = await convertOpenAIMessages(messages, { model: 'deepseek-v4-flash' });
+
+      expect((result[0] as any).reasoning_content).toBeUndefined();
+      expect((result[1] as any).reasoning_content).toBeUndefined();
+    });
+
+    it('should preserve existing reasoning_content over reasoning.content', async () => {
+      const messages = [
+        {
+          role: 'assistant',
+          content: 'Hi',
+          reasoning: { content: 'should be ignored', duration: 10 },
+          reasoning_content: 'kept',
+        },
+      ] as any;
+
+      const result = await convertOpenAIMessages(messages, { model: 'deepseek-v4-flash' });
+
+      expect((result[0] as any).reasoning_content).toBe('kept');
+    });
+  });
 });
 
 describe('convertOpenAIResponseInputs', () => {
@@ -414,6 +603,40 @@ describe('convertOpenAIResponseInputs', () => {
         call_id: 'call_123',
         output: 'Function result',
         type: 'function_call_output',
+      },
+    ]);
+  });
+
+  it('工具响应带图片时应保持 output 纯文本并追加 user 图片消息', async () => {
+    vi.mocked(parseDataUri).mockReturnValue({ type: 'url', base64: null, mimeType: null });
+
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          { text: '[Image: cat.png]', type: 'text' },
+          { image_url: { url: 'https://files.example.com/cat.png' }, type: 'image_url' },
+        ] as any,
+        role: 'tool',
+        tool_call_id: 'call_123',
+      },
+    ];
+
+    const result = await convertOpenAIResponseInputs(messages);
+
+    expect(result).toEqual([
+      {
+        call_id: 'call_123',
+        // function_call_output.output is text-only — images must not land here.
+        output: '[Image: cat.png]',
+        type: 'function_call_output',
+      },
+      {
+        content: [
+          { text: 'Image output of tool call call_123:', type: 'input_text' },
+          { image_url: 'https://files.example.com/cat.png', type: 'input_image' },
+        ],
+        role: 'user',
+        type: 'message',
       },
     ]);
   });
@@ -697,6 +920,54 @@ describe('convertOpenAIResponseInputs', () => {
     ]);
   });
 
+  it('should replay encrypted reasoning from a persisted message for the same provider', async () => {
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: 'hello',
+        model: 'gpt-5.6-sol',
+        provider: 'chatgpt',
+        reasoning: {
+          content: 'reasoning content',
+          signature: 'encrypted-reasoning-content',
+        },
+        role: 'assistant',
+      },
+    ];
+
+    const result = await convertOpenAIResponseInputs(messages, { provider: 'chatgpt' });
+
+    expect(result).toEqual([
+      {
+        encrypted_content: 'encrypted-reasoning-content',
+        summary: [{ text: 'reasoning content', type: 'summary_text' }],
+        type: 'reasoning',
+      },
+      { content: 'hello', role: 'assistant' },
+    ]);
+  });
+
+  it('should preserve encrypted reasoning content without a visible summary', async () => {
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: 'hello',
+        provider: 'chatgpt',
+        reasoning: { signature: 'encrypted-reasoning-content' },
+        role: 'assistant',
+      },
+    ];
+
+    const result = await convertOpenAIResponseInputs(messages, { provider: 'chatgpt' });
+
+    expect(result).toEqual([
+      {
+        encrypted_content: 'encrypted-reasoning-content',
+        summary: [],
+        type: 'reasoning',
+      },
+      { content: 'hello', role: 'assistant' },
+    ]);
+  });
+
   it('should preserve message order when earlier messages have async content (images)', async () => {
     const messages: OpenAIChatMessage[] = [
       { content: 'system prompts', role: 'system' },
@@ -755,16 +1026,16 @@ describe('convertOpenAIResponseInputs', () => {
             type: 'text',
           },
         ],
+        provider: 'anthropic',
         role: 'assistant',
         reasoning: {
           content: 'The user is asking',
           duration: 110,
-          // @ts-expect-error: ignore
           signature: 'E',
         },
       },
     ];
-    const result = await convertOpenAIResponseInputs(messages);
+    const result = await convertOpenAIResponseInputs(messages, { provider: 'chatgpt' });
     expect(result).toEqual([
       { content: 'system prompts', role: 'developer' },
       { content: '你是谁', role: 'user' },
@@ -774,6 +1045,55 @@ describe('convertOpenAIResponseInputs', () => {
       },
       {
         content: [{ text: '我是 Claude', type: 'output_text' }],
+        role: 'assistant',
+      },
+    ]);
+  });
+
+  it('should drop assistant image content for Responses API input', async () => {
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          {
+            image_url: { url: 'data:image/jpeg;base64,abc123' },
+            type: 'image_url',
+          },
+        ],
+        role: 'assistant',
+      },
+    ];
+
+    const result = await convertOpenAIResponseInputs(messages);
+
+    expect(result).toEqual([]);
+  });
+
+  it('should keep assistant text and drop unsupported assistant media for Responses API input', async () => {
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          {
+            text: 'Here is the generated image.',
+            type: 'text',
+          },
+          {
+            image_url: { url: 'data:image/jpeg;base64,abc123' },
+            type: 'image_url',
+          },
+          {
+            video_url: { url: 'data:video/mp4;base64,def456' },
+            type: 'video_url',
+          },
+        ],
+        role: 'assistant',
+      },
+    ];
+
+    const result = await convertOpenAIResponseInputs(messages);
+
+    expect(result).toEqual([
+      {
+        content: [{ text: 'Here is the generated image.', type: 'output_text' }],
         role: 'assistant',
       },
     ]);

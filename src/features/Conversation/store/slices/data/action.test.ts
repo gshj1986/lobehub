@@ -1,9 +1,14 @@
-import { type UIChatMessage } from '@lobechat/types';
+import type { UIChatMessage } from '@lobechat/types';
 import { act, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { useClientDataSWRWithSync } from '@/libs/swr';
 import { messageService } from '@/services/message';
+import {
+  clearMessageListClientCacheState,
+  MESSAGE_LIST_VERIFICATION_INTERVAL,
+  runMessageListQuery,
+} from '@/services/message/cache';
 
 import { createStore } from '../../index';
 import { dataSelectors } from './selectors';
@@ -348,6 +353,53 @@ describe('DataSlice', () => {
       expect(notFound).toBeUndefined();
     });
 
+    it('getBlockContent should find assistant blocks in compressed messages', () => {
+      const store = createTestStore();
+
+      store.getState().replaceMessages([
+        {
+          id: 'compressed-group',
+          content: '',
+          role: 'compressedGroup',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          compressedMessages: [
+            {
+              id: 'compressed-assistant',
+              content: 'Compressed assistant content',
+              role: 'assistant',
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            },
+            {
+              id: 'compressed-assistant-group',
+              content: '',
+              role: 'assistantGroup',
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              children: [
+                {
+                  id: 'compressed-block',
+                  content: 'Compressed block content',
+                  tools: [{ id: 'compressed-tool' }],
+                },
+              ],
+            },
+          ],
+        },
+      ] as any);
+
+      expect(dataSelectors.getBlockContent('compressed-assistant')(store.getState())).toBe(
+        'Compressed assistant content',
+      );
+      expect(dataSelectors.getBlockContent('compressed-block')(store.getState())).toBe(
+        'Compressed block content',
+      );
+      expect(dataSelectors.getToolsInBlock('compressed-block')(store.getState())).toEqual([
+        { id: 'compressed-tool' },
+      ]);
+    });
+
     it('getDbMessageById should find message from dbMessages', () => {
       const store = createTestStore();
 
@@ -491,6 +543,7 @@ describe('DataSlice', () => {
   describe('useFetchMessages', () => {
     beforeEach(() => {
       vi.clearAllMocks();
+      clearMessageListClientCacheState();
     });
 
     it('should pass threadId to messageService.getMessages', async () => {
@@ -520,6 +573,7 @@ describe('DataSlice', () => {
       await waitFor(() => {
         expect(messageService.getMessages).toHaveBeenCalledWith({
           agentId: 'test-session',
+          groupId: null,
           threadId: 'test-thread',
           topicId: 'test-topic',
         });
@@ -666,12 +720,35 @@ describe('DataSlice', () => {
 
       // Key should be an array with prefix and context object
       expect(Array.isArray(swrKey)).toBe(true);
-      expect(swrKey[0]).toBe('CONVERSATION_FETCH_MESSAGES');
+      expect(swrKey[0]).toBe('message:list');
       expect(swrKey[1]).toEqual({
         agentId: 'test-session',
-        topicId: 'test-topic',
+        groupId: null,
         threadId: 'test-thread',
+        topicId: 'test-topic',
       });
+    });
+
+    it('skips switch-time revalidation after a successful server verification', async () => {
+      const context = {
+        agentId: 'test-session',
+        topicId: 'test-topic',
+        threadId: null,
+      };
+      await runMessageListQuery(context, async () => []);
+      vi.mocked(messageService.getMessages).mockResolvedValue([]);
+
+      const store = createStore({ context });
+      store.getState().useFetchMessages(context);
+
+      expect(vi.mocked(useClientDataSWRWithSync)).toHaveBeenCalledWith(
+        expect.any(Array),
+        expect.any(Function),
+        expect.objectContaining({
+          dedupingInterval: MESSAGE_LIST_VERIFICATION_INTERVAL,
+          revalidateIfStale: false,
+        }),
+      );
     });
 
     it('should pass groupId to messageService.getMessages for group chat', async () => {

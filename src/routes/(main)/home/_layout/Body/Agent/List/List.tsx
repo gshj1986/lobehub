@@ -5,7 +5,6 @@ import { type CSSProperties } from 'react';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import EmptyNavItem from '@/features/NavPanel/components/EmptyNavItem';
 import NavItem from '@/features/NavPanel/components/NavItem';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
@@ -13,10 +12,10 @@ import { useHomeStore } from '@/store/home';
 import { homeAgentListSelectors } from '@/store/home/selectors';
 import { SessionDefaultGroup } from '@/types/session';
 
-import { useCreateMenuItems } from '../../../hooks';
-import NewAgentButton from '../../NewAgentButton';
+import CreateAgentButton from '../CreateAgentButton';
 import GroupItem from './AgentGroupItem';
 import AgentItem from './AgentItem';
+import { useKeepSidebarListed } from './useAgentList';
 
 interface SessionListProps {
   dataSource: SidebarAgentItem[];
@@ -24,32 +23,38 @@ interface SessionListProps {
   itemClassName?: string;
   itemStyle?: CSSProperties;
   onMoreClick?: () => void;
+  visibility?: 'private' | 'public';
 }
 
 const List = memo<SessionListProps>(
-  ({ onMoreClick, dataSource, groupId, itemStyle, itemClassName }) => {
+  ({ onMoreClick, dataSource, groupId, itemStyle, itemClassName, visibility }) => {
     const { t } = useTranslation('chat');
-    const { createAgent } = useCreateMenuItems();
 
     // Early return for empty state
     const isEmpty = useMemo(() => dataSource.length === 0, [dataSource.length]);
 
     // Check if this is defaultList and if there are more agents
     const isDefaultList = groupId === SessionDefaultGroup.Default;
-    const ungroupedAgentsCount = useHomeStore(homeAgentListSelectors.ungroupedAgentsCount);
+    const ungroupedAgents = useHomeStore(homeAgentListSelectors.ungroupedAgents);
     const agentPageSize = useGlobalStore(systemStatusSelectors.agentPageSize);
     const openAllAgentsDrawer = useHomeStore((s) => s.openAllAgentsDrawer);
+    const keep = useKeepSidebarListed();
 
-    const hasMore = isDefaultList && ungroupedAgentsCount > agentPageSize;
+    // Count what the sidebar can actually show (caller's unpins excluded) so
+    // hidden items alone never surface a dangling "More" row.
+    const hasMore = isDefaultList && keep(ungroupedAgents).length > agentPageSize;
+
+    // Empty custom/default groups always show the Create button so the user can populate them.
+    // Non-empty lists only show it at the bottom of the default group; custom groups rely on
+    // the group header dropdown for further additions. When the default list overflows and we
+    // already render the "More" entry, hide the Create button to keep the footer compact —
+    // creation is still reachable from the group header dropdown.
+    const showCreateButton = isEmpty ? groupId !== undefined : isDefaultList && !hasMore;
 
     if (isEmpty) {
-      return (
-        <EmptyNavItem
-          className={itemClassName}
-          title={t('emptyAgentAction')}
-          onClick={() => createAgent({ groupId })}
-        />
-      );
+      return showCreateButton ? (
+        <CreateAgentButton className={itemClassName} groupId={groupId} visibility={visibility} />
+      ) : null;
     }
 
     return (
@@ -61,16 +66,16 @@ const List = memo<SessionListProps>(
             <AgentItem className={itemClassName} item={item} key={item.id} style={itemStyle} />
           ),
         )}
-        {isDefaultList &&
-          (hasMore ? (
-            <NavItem
-              icon={MoreHorizontal}
-              title={t('input.more')}
-              onClick={onMoreClick || openAllAgentsDrawer}
-            />
-          ) : (
-            <NewAgentButton />
-          ))}
+        {hasMore && (
+          <NavItem
+            icon={MoreHorizontal}
+            title={t('input.more')}
+            onClick={onMoreClick || openAllAgentsDrawer}
+          />
+        )}
+        {showCreateButton && (
+          <CreateAgentButton className={itemClassName} groupId={groupId} visibility={visibility} />
+        )}
       </Flexbox>
     );
   },

@@ -1,7 +1,8 @@
 'use client';
 
 import { SendButton } from '@lobehub/editor/react';
-import { Button, Flexbox, Select, Text } from '@lobehub/ui';
+import { Flexbox, Text } from '@lobehub/ui';
+import { Button, Select } from '@lobehub/ui/base-ui';
 import { cssVar } from 'antd-style';
 import { Undo2Icon } from 'lucide-react';
 import { memo, useCallback, useRef, useState } from 'react';
@@ -20,20 +21,39 @@ interface ResponseLanguageStepProps {
 }
 
 const ResponseLanguageStep = memo<ResponseLanguageStepProps>(({ onBack, onNext }) => {
-  const { t } = useTranslation(['onboarding', 'common']);
+  const { i18n, t } = useTranslation(['onboarding', 'common']);
   const switchLocale = useGlobalStore((s) => s.switchLocale);
   const setSettings = useUserStore((s) => s.setSettings);
 
-  const [value, setValue] = useState<Locales | ''>(() => normalizeLocale(navigator.language));
+  // Mirror i18n's current locale rather than navigator.language. The user may
+  // have already switched language in the previous step (TelemetryStep), so
+  // navigator.language can disagree with what is being rendered. Deriving
+  // straight from i18n keeps the Select in lock-step with the visible UI.
+  const value: Locales = normalizeLocale(
+    i18n.resolvedLanguage || i18n.language || navigator.language,
+  );
   const [isNavigating, setIsNavigating] = useState(false);
+  const [hasError, setHasError] = useState(false);
   const isNavigatingRef = useRef(false);
 
   const handleNext = useCallback(async () => {
     if (isNavigatingRef.current) return;
     isNavigatingRef.current = true;
     setIsNavigating(true);
-    await setSettings({ general: { responseLanguage: value || '' } });
-    await onNext();
+    setHasError(false);
+    try {
+      // This write is the sole gate for the whole onboarding flow
+      // (`commonStepsCompleted` keys off `responseLanguage`), so it must be able
+      // to fail: on error reset the navigating lock so the user can retry
+      // instead of being stuck with both buttons permanently disabled
+      //
+      await setSettings({ general: { responseLanguage: value } });
+      await onNext();
+    } catch {
+      setHasError(true);
+      isNavigatingRef.current = false;
+      setIsNavigating(false);
+    }
   }, [value, setSettings, onNext]);
 
   const handleBack = useCallback(() => {
@@ -80,10 +100,7 @@ const ResponseLanguageStep = memo<ResponseLanguageStepProps>(({ onBack, onNext }
             width: '100%',
           }}
           onChange={(v) => {
-            if (v) {
-              switchLocale(v);
-              setValue(v);
-            }
+            if (v) switchLocale(v);
           }}
         />
         <SendButton
@@ -98,6 +115,11 @@ const ResponseLanguageStep = memo<ResponseLanguageStepProps>(({ onBack, onNext }
       <Text style={{ fontSize: 12 }} type="secondary">
         {t('responseLanguage.hint')}
       </Text>
+      {hasError && (
+        <Text style={{ color: cssVar.colorError, fontSize: 12 }}>
+          {t('responseLanguage.saveFailed')}
+        </Text>
+      )}
       <Flexbox horizontal justify={'flex-start'} style={{ marginTop: 32 }}>
         <Button
           disabled={isNavigating}

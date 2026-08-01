@@ -23,6 +23,7 @@ export const calculateConversationSpacerHeight = (
 interface ConversationSpacerScrollEffectOptions {
   delta: number;
   hasPrevOffset: boolean;
+  hasUserIntent: boolean;
   isAIGenerating: boolean;
   isMounted: boolean;
 }
@@ -30,10 +31,11 @@ interface ConversationSpacerScrollEffectOptions {
 export const getConversationSpacerScrollEffect = ({
   delta,
   hasPrevOffset,
+  hasUserIntent,
   isAIGenerating,
   isMounted,
 }: ConversationSpacerScrollEffectOptions) => {
-  const cancelPin = isMounted && hasPrevOffset && delta < 0;
+  const cancelPin = isMounted && hasPrevOffset && hasUserIntent && delta < 0;
 
   return {
     cancelPin,
@@ -282,7 +284,13 @@ const useSpacerHeight = ({
 // ---------------------------------------------------------------------------
 type PinState = { index: number; seenActive: boolean } | null;
 
-const usePinController = ({ virtuaRef }: { virtuaRef: RefObject<VListHandle | null> }) => {
+const usePinController = ({
+  headerOffset,
+  virtuaRef,
+}: {
+  headerOffset: number;
+  virtuaRef: RefObject<VListHandle | null>;
+}) => {
   const pinRef = useRef<PinState>(null);
 
   const scrollToPinned = useCallback(
@@ -297,9 +305,10 @@ const usePinController = ({ virtuaRef }: { virtuaRef: RefObject<VListHandle | nu
       }
 
       log('scrollToPinned (%s) index=%d', reason, pin.index);
-      scrollToIndex(pin.index, { align: 'start', smooth: true });
+      // pin.index is a message index; the header slot row shifts virtua rows.
+      scrollToIndex(pin.index + headerOffset, { align: 'start', smooth: true });
     },
-    [virtuaRef],
+    [headerOffset, virtuaRef],
   );
 
   const clearPin = useCallback((reason: string) => {
@@ -341,7 +350,7 @@ const useScrollShrink = ({
   const scrollShrinkEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const onScrollOffset = useCallback(
-    (currentScrollOffset: number) => {
+    (currentScrollOffset: number, hasUserIntent = false) => {
       const prevOffset = prevScrollOffsetRef.current;
       prevScrollOffsetRef.current = currentScrollOffset;
 
@@ -349,6 +358,7 @@ const useScrollShrink = ({
       const { cancelPin, shrinkSpacer } = getConversationSpacerScrollEffect({
         delta,
         hasPrevOffset: prevOffset !== null,
+        hasUserIntent,
         isAIGenerating: isAIGeneratingRef.current,
         isMounted: mountedRef.current,
       });
@@ -400,6 +410,12 @@ const useScrollShrink = ({
 // ---------------------------------------------------------------------------
 export interface UseConversationScrollOptions {
   dataSource: string[];
+  /**
+   * Number of synthetic rows prepended to the VList before the messages
+   * (e.g. the headerSlot spacer). The pin targets message indices, so virtua
+   * calls translate by this offset.
+   */
+  headerOffset?: number;
   isSecondLastMessageFromUser: boolean;
   virtuaRef: RefObject<VListHandle | null>;
 }
@@ -413,7 +429,7 @@ export interface UseConversationScrollResult {
   isScrollShrinking: boolean;
   isSpacerMessage: (id: string) => boolean;
   listData: string[];
-  onScrollOffset: (scrollOffset: number) => void;
+  onScrollOffset: (scrollOffset: number, hasUserIntent?: boolean) => void;
   registerSpacerNode: (node: HTMLElement | null) => void;
   spacerActive: boolean;
   spacerHeight: number;
@@ -421,6 +437,7 @@ export interface UseConversationScrollResult {
 
 export const useConversationScroll = ({
   dataSource,
+  headerOffset = 0,
   isSecondLastMessageFromUser,
   virtuaRef,
 }: UseConversationScrollOptions): UseConversationScrollResult => {
@@ -472,7 +489,7 @@ export const useConversationScroll = ({
     userMessageIndex,
   });
 
-  const { clearPin, pinRef, scrollToPinned } = usePinController({ virtuaRef });
+  const { clearPin, pinRef, scrollToPinned } = usePinController({ headerOffset, virtuaRef });
 
   const { onScrollOffset, prevScrollOffsetRef } = useScrollShrink({
     clearPin,

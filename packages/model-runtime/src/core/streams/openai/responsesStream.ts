@@ -132,7 +132,8 @@ const transformOpenAIStream = (
       }
 
       case 'response.output_text.annotation.added': {
-        const citations = chunk.annotation;
+        // OpenAI SDK v6 types the annotation payload as `unknown`; narrow to the URL-citation shape we read.
+        const citations = chunk.annotation as { title?: string; url?: string };
 
         if (streamContext.returnedCitationArray) {
           streamContext.returnedCitationArray.push({
@@ -145,6 +146,14 @@ const transformOpenAIStream = (
       }
 
       case 'response.output_item.done': {
+        if (chunk.item.type === 'reasoning' && chunk.item.encrypted_content) {
+          return {
+            data: chunk.item.encrypted_content,
+            id: chunk.item.id,
+            type: 'reasoning_signature',
+          };
+        }
+
         if (streamContext.returnedCitationArray?.length) {
           return {
             data: { citations: streamContext.returnedCitationArray },
@@ -158,12 +167,25 @@ const transformOpenAIStream = (
 
       case 'response.completed': {
         if (chunk.response.usage) {
+          delete streamContext.usageMissingDiagnostics;
           return {
             data: convertOpenAIResponseUsage(chunk.response.usage, payload),
             id: chunk.response.id,
             type: 'usage',
           };
         }
+
+        streamContext.usageMissingDiagnostics = {
+          apiMode: 'responses',
+          hasUsageMetadata: false,
+          includeUsageRequested: payload?.includeUsageRequested,
+          model: payload?.model,
+          provider: payload?.provider,
+          responseId: chunk.response.id,
+          source: 'openai_responses',
+          terminalEventType: chunk.type,
+          terminalStatus: chunk.response.status,
+        };
 
         return { data: chunk, id: streamContext.id, type: 'data' };
       }
@@ -205,7 +227,9 @@ export const OpenAIResponsesStream = (
   const streamStack: StreamContext = { id: '' };
 
   const readableStream =
-    stream instanceof ReadableStream ? stream : convertIterableToStream(stream);
+    stream instanceof ReadableStream
+      ? stream
+      : convertIterableToStream(stream, { model: payload?.model, provider: payload?.provider });
 
   // use closure to pass payload to transformOpenAIStream
   const transformWithPayload: typeof transformOpenAIStream = (chunk, streamContext) =>
@@ -225,6 +249,6 @@ export const OpenAIResponsesStream = (
         }),
       )
       .pipeThrough(createSSEProtocolTransformer((c) => c, streamStack))
-      .pipeThrough(createCallbacksTransformer(callbacks))
+      .pipeThrough(createCallbacksTransformer(callbacks, { streamStack }))
   );
 };

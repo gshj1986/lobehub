@@ -1,22 +1,52 @@
-import { and, desc, eq, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, notInArray, type SQL, sql } from 'drizzle-orm';
 
+import { agents } from '../schemas/agent';
 import type { BriefItem, NewBrief } from '../schemas/task';
-import { briefs } from '../schemas/task';
+import { briefs, tasks } from '../schemas/task';
 import type { LobeChatDatabase } from '../type';
+import { normalizeInboxAgentAvatar, normalizeInboxAgentTitle } from '../utils/inboxAgent';
+import { buildWorkspacePayload } from '../utils/workspace';
+
+export interface UnresolvedBriefRow {
+  agentAvatar: string | null;
+  agentBackgroundColor: string | null;
+  agentRowId: string | null;
+  agentTitle: string | null;
+  brief: BriefItem;
+  /** Workspace-scoped task ref (`T-12`), so an inbox row can name the task it belongs to. */
+  taskIdentifier: string | null;
+  taskName: string | null;
+  taskStatus: string | null;
+}
 
 export class BriefModel {
   private readonly userId: string;
   private readonly db: LobeChatDatabase;
+  private readonly workspaceId?: string;
 
-  constructor(db: LobeChatDatabase, userId: string) {
+  constructor(db: LobeChatDatabase, userId: string, workspaceId?: string) {
     this.db = db;
     this.userId = userId;
+    this.workspaceId = workspaceId;
   }
+
+  // Briefs are per-user notifications (owner-only `readAt` / `resolvedAction` /
+  // `resolvedAt`), not workspace-shared content. The standard `buildWorkspaceWhere`
+  // helper drops the `user_id` constraint in workspace mode by design (members
+  // share content rows), which would leak each member's briefs to everyone else
+  // in the workspace. Brief ownership therefore always requires `user_id` to
+  // match, in both personal and workspace mode.
+  private ownership = (): SQL =>
+    this.workspaceId
+      ? (and(eq(briefs.userId, this.userId), eq(briefs.workspaceId, this.workspaceId)) as SQL)
+      : (and(eq(briefs.userId, this.userId), isNull(briefs.workspaceId)) as SQL);
 
   async create(data: Omit<NewBrief, 'id' | 'userId'>): Promise<BriefItem> {
     const result = await this.db
       .insert(briefs)
-      .values({ ...data, userId: this.userId })
+      .values(
+        buildWorkspacePayload({ userId: this.userId, workspaceId: this.workspaceId }, { ...data }),
+      )
       .returning();
 
     return result[0];
@@ -26,7 +56,7 @@ export class BriefModel {
     const result = await this.db
       .select()
       .from(briefs)
-      .where(and(eq(briefs.id, id), eq(briefs.userId, this.userId)))
+      .where(and(eq(briefs.id, id), this.ownership()))
       .limit(1);
 
     return result[0] || null;
@@ -39,7 +69,7 @@ export class BriefModel {
   }): Promise<{ briefs: BriefItem[]; total: number }> {
     const { type, limit = 50, offset = 0 } = options || {};
 
-    const conditions = [eq(briefs.userId, this.userId)];
+    const conditions = [this.ownership()];
     if (type) conditions.push(eq(briefs.type, type));
 
     const where = and(...conditions);
@@ -60,12 +90,30 @@ export class BriefModel {
     return { briefs: items, total: Number(countResult[0].count) };
   }
 
-  // For Daily Brief homepage — unresolved briefs sorted by priority
-  async listUnresolved(): Promise<BriefItem[]> {
-    return this.db
-      .select()
+  /**
+   * Home Daily Brief feed: unresolved briefs sorted by priority, joined
+   * with the producing agent + parent task in a single SQL. Capped at 20
+   * so heavy-inbox users don't pay the full enrich cost on every home
+   * render — the rest is reachable via the task list page.
+   */
+  async listUnresolvedEnriched(options?: { limit?: number }): Promise<UnresolvedBriefRow[]> {
+    const { limit = 20 } = options ?? {};
+    const rows = await this.db
+      .select({
+        agentAvatar: agents.avatar,
+        agentBackgroundColor: agents.backgroundColor,
+        agentRowId: agents.id,
+        agentSlug: agents.slug,
+        agentTitle: agents.title,
+        brief: briefs,
+        taskIdentifier: tasks.identifier,
+        taskName: tasks.name,
+        taskStatus: tasks.status,
+      })
       .from(briefs)
-      .where(and(eq(briefs.userId, this.userId), isNull(briefs.resolvedAt)))
+      .leftJoin(agents, eq(briefs.agentId, agents.id))
+      .leftJoin(tasks, eq(briefs.taskId, tasks.id))
+      .where(and(this.ownership(), isNull(briefs.resolvedAt)))
       .orderBy(
         sql`CASE
           WHEN ${briefs.priority} = 'urgent' THEN 0
@@ -73,14 +121,63 @@ export class BriefModel {
           ELSE 2
         END`,
         desc(briefs.createdAt),
-      );
+      )
+      .limit(limit);
+
+    return rows.map(({ agentSlug, ...row }) => ({
+      ...row,
+      agentAvatar: normalizeInboxAgentAvatar(row.agentAvatar, {
+        slug: agentSlug,
+      }),
+      agentTitle: normalizeInboxAgentTitle(row.agentTitle, {
+        slug: agentSlug,
+      }),
+    }));
+  }
+
+  /**
+   * Lists unresolved briefs for one agent and trigger before applying the read cap.
+   *
+   * Use when:
+   * - Server-side collectors need a bounded, purpose-specific Daily Brief read
+   * - Callers must not let unrelated unresolved briefs consume the limit
+   *
+   * Expects:
+   * - `agentId` and `trigger` identify the proposal or signal boundary
+   * - `limit` is a small bounded read budget
+   *
+   * Returns:
+   * - Matching unresolved brief rows ordered newest first
+   */
+  async listUnresolvedByAgentAndTrigger({
+    agentId,
+    limit = 20,
+    trigger,
+  }: {
+    agentId: string;
+    limit?: number;
+    trigger: string;
+  }): Promise<BriefItem[]> {
+    return this.db
+      .select()
+      .from(briefs)
+      .where(
+        and(
+          this.ownership(),
+          eq(briefs.agentId, agentId),
+          eq(briefs.trigger, trigger),
+          isNull(briefs.resolvedAt),
+        ),
+      )
+      .orderBy(desc(briefs.createdAt))
+      .limit(limit);
   }
 
   async findByTaskId(taskId: string): Promise<BriefItem[]> {
     return this.db
       .select()
       .from(briefs)
-      .where(and(eq(briefs.taskId, taskId), eq(briefs.userId, this.userId)))
+      .where(and(eq(briefs.taskId, taskId), this.ownership()))
       .orderBy(desc(briefs.createdAt));
   }
 
@@ -95,7 +192,7 @@ export class BriefModel {
   ): Promise<boolean> {
     const excludeTypes = options?.excludeTypes ?? [];
     const conditions = [
-      eq(briefs.userId, this.userId),
+      this.ownership(),
       eq(briefs.taskId, taskId),
       eq(briefs.priority, 'urgent'),
       isNull(briefs.resolvedAt),
@@ -116,7 +213,7 @@ export class BriefModel {
     return this.db
       .select()
       .from(briefs)
-      .where(and(eq(briefs.cronJobId, cronJobId), eq(briefs.userId, this.userId)))
+      .where(and(eq(briefs.cronJobId, cronJobId), this.ownership()))
       .orderBy(desc(briefs.createdAt));
   }
 
@@ -124,7 +221,7 @@ export class BriefModel {
     const result = await this.db
       .update(briefs)
       .set({ readAt: new Date() })
-      .where(and(eq(briefs.id, id), eq(briefs.userId, this.userId)))
+      .where(and(eq(briefs.id, id), this.ownership()))
       .returning();
 
     return result[0] || null;
@@ -142,7 +239,58 @@ export class BriefModel {
         resolvedAt: new Date(),
         resolvedComment: options?.comment,
       })
-      .where(and(eq(briefs.id, id), eq(briefs.userId, this.userId)))
+      .where(and(eq(briefs.id, id), this.ownership()))
+      .returning();
+
+    return result[0] || null;
+  }
+
+  /**
+   * Bulk "mark all read": resolves the given briefs with a neutral `read`
+   * action so they leave the unresolved feed. Deliberately bypasses
+   * `BriefService.resolve()` — a bulk dismissal must never trigger the
+   * approve-completes-task lifecycle; only a single explicit `approve` may.
+   * Already-resolved briefs are skipped so a stale client list cannot
+   * overwrite an earlier, more meaningful resolution.
+   *
+   * Returns the ids that were actually resolved.
+   */
+  async resolveManyAsRead(ids: string[]): Promise<string[]> {
+    if (ids.length === 0) return [];
+
+    const now = new Date();
+    const rows = await this.db
+      .update(briefs)
+      .set({
+        // Keep the first-read timestamp when the brief was already opened.
+        readAt: sql`COALESCE(${briefs.readAt}, ${now})`,
+        resolvedAction: 'read',
+        resolvedAt: now,
+      })
+      .where(and(inArray(briefs.id, ids), this.ownership(), isNull(briefs.resolvedAt)))
+      .returning({ id: briefs.id });
+
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * Updates freeform brief metadata without resolving the brief.
+   *
+   * Use when:
+   * - Server workflows need to persist intermediate Daily Brief state
+   * - A proposal approve attempt must remain visible after stale or failed preflight
+   *
+   * Expects:
+   * - `metadata` is already validated by the caller-owned feature boundary
+   *
+   * Returns:
+   * - The updated brief row, or `null` when the brief no longer exists
+   */
+  async updateMetadata(id: string, metadata: BriefItem['metadata']): Promise<BriefItem | null> {
+    const result = await this.db
+      .update(briefs)
+      .set({ metadata })
+      .where(and(eq(briefs.id, id), this.ownership()))
       .returning();
 
     return result[0] || null;
@@ -151,7 +299,7 @@ export class BriefModel {
   async delete(id: string): Promise<boolean> {
     const result = await this.db
       .delete(briefs)
-      .where(and(eq(briefs.id, id), eq(briefs.userId, this.userId)))
+      .where(and(eq(briefs.id, id), this.ownership()))
       .returning();
 
     return result.length > 0;

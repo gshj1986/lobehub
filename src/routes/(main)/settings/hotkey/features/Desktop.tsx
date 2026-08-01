@@ -10,10 +10,12 @@ import { useTranslation } from 'react-i18next';
 
 import { DESKTOP_HOTKEYS_REGISTRATION } from '@/const/desktopGlobalShortcuts';
 import { FORM_STYLE } from '@/const/layoutTokens';
-import hotkeyMeta from '@/locales/default/hotkey';
+import { SettingsSearchAnchor } from '@/features/SettingsSearch/anchor';
 import { useElectronStore } from '@/store/electron';
 import { desktopHotkeysSelectors } from '@/store/electron/selectors';
 import { type DesktopHotkeyItem } from '@/types/hotkey';
+
+import { hotkeyFormStyles } from './styles';
 
 const HotkeySetting = memo(() => {
   const { t } = useTranslation(['setting', 'hotkey']);
@@ -61,25 +63,24 @@ const HotkeySetting = memo(() => {
         texts={{ clear: t('hotkey.clearBinding') }}
         value={hotkeys[item.id]}
         onChange={(value) => void updateHotkey(item.id, value)}
-        onClear={() => void updateHotkey(item.id, '')}
       />
     ),
 
-    desc: hotkeyMeta[`desktop.${item.id}.desc` as keyof typeof hotkeyMeta]
-      ? t(`desktop.${item.id}.desc` as keyof typeof hotkeyMeta, { ns: 'hotkey' })
-      : undefined,
-    label: t(`desktop.${item.id}.title` as keyof typeof hotkeyMeta, { ns: 'hotkey' }),
+    label: t(`desktop.${item.id}.title`, { ns: 'hotkey' }),
     name: item.id,
   });
 
   const desktop: FormGroupItemType = {
     children: DESKTOP_HOTKEYS_REGISTRATION.map((item) => mapHotkeyItem(item)),
     extra: loading && <Icon spin icon={Loader2Icon} size={16} style={{ opacity: 0.5 }} />,
-    title: t('hotkey.group.desktop'),
+    title: (
+      <SettingsSearchAnchor id={'hotkey-desktop'}>{t('hotkey.group.desktop')}</SettingsSearchAnchor>
+    ),
   };
 
   return (
     <Form
+      classNames={{ item: hotkeyFormStyles.item }}
       collapsible={false}
       form={form}
       initialValues={hotkeys}

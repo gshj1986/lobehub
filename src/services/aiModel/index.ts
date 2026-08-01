@@ -1,7 +1,9 @@
 import {
   type AiModelSortMap,
+  type AiModelType,
   type AiProviderModelListItem,
   type CreateAiModelParams,
+  isAiModelVisible,
   type ToggleAiModelEnableParams,
   type UpdateAiModelParams,
 } from 'model-bank';
@@ -12,6 +14,7 @@ export interface GetAiProviderModelListParams {
   enabled?: boolean;
   limit?: number;
   offset?: number;
+  type?: AiModelType;
 }
 
 export class AiModelService {
@@ -23,7 +26,8 @@ export class AiModelService {
     id: string,
     params?: GetAiProviderModelListParams,
   ): Promise<AiProviderModelListItem[]> => {
-    return lambdaClient.aiModel.getAiProviderModelList.query({ id, ...params });
+    const models = await lambdaClient.aiModel.getAiProviderModelList.query({ id, ...params });
+    return models.filter(isAiModelVisible);
   };
 
   getAiModelById = async (id: string) => {

@@ -15,6 +15,10 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   action: css`
     opacity: 0;
     transition: opacity ${cssVar.motionDurationMid} ${cssVar.motionEaseInOut};
+
+    button {
+      color: ${cssVar.colorTextSecondary};
+    }
   `,
   actionVisible: css`
     opacity: 1;
@@ -41,7 +45,7 @@ const GroupBlock = memo<GroupBlockProps>(
             justify={'flex-start'}
             style={{ overflow: 'hidden' }}
           >
-            <Icon color={cssVar.colorTextDescription} icon={icon} size={18} />
+            {icon && <Icon color={cssVar.colorTextDescription} icon={icon} size={18} />}
             <Text ellipsis color={cssVar.colorTextSecondary}>
               {title}
             </Text>

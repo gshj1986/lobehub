@@ -64,6 +64,7 @@ describe('useConversationScroll — helpers', () => {
       getConversationSpacerScrollEffect({
         delta: -24,
         hasPrevOffset: true,
+        hasUserIntent: true,
         isAIGenerating: true,
         isMounted: true,
       }),
@@ -75,6 +76,7 @@ describe('useConversationScroll — helpers', () => {
       getConversationSpacerScrollEffect({
         delta: -24,
         hasPrevOffset: true,
+        hasUserIntent: true,
         isAIGenerating: false,
         isMounted: true,
       }),
@@ -86,6 +88,19 @@ describe('useConversationScroll — helpers', () => {
       getConversationSpacerScrollEffect({
         delta: -999,
         hasPrevOffset: false,
+        hasUserIntent: true,
+        isAIGenerating: false,
+        isMounted: true,
+      }),
+    ).toEqual({ cancelPin: false, shrinkSpacer: false });
+  });
+
+  it('ignores layout-driven negative offsets without user scroll intent', () => {
+    expect(
+      getConversationSpacerScrollEffect({
+        delta: -24,
+        hasPrevOffset: true,
+        hasUserIntent: false,
         isAIGenerating: false,
         isMounted: true,
       }),
@@ -142,6 +157,7 @@ describe('useConversationScroll — pin behavior', () => {
 
   const renderScrollHook = (props: {
     dataSource: string[];
+    headerOffset?: number;
     isSecondLastMessageFromUser: boolean;
     fixture?: Partial<StoreFixture>;
   }) => {
@@ -158,7 +174,12 @@ describe('useConversationScroll — pin behavior', () => {
 
     const hook = renderHook(
       ({ dataSource, isSecondLastMessageFromUser }) =>
-        useConversationScroll({ dataSource, isSecondLastMessageFromUser, virtuaRef }),
+        useConversationScroll({
+          dataSource,
+          headerOffset: props.headerOffset,
+          isSecondLastMessageFromUser,
+          virtuaRef,
+        }),
       {
         initialProps: {
           dataSource: props.dataSource,
@@ -205,6 +226,23 @@ describe('useConversationScroll — pin behavior', () => {
 
     expect(scrollToIndex).toHaveBeenCalledTimes(1);
     expect(scrollToIndex).toHaveBeenCalledWith(2, { align: 'start', smooth: true });
+  });
+
+  it('translates the pin target by headerOffset when a header slot row is present', () => {
+    const { rerender } = renderScrollHook({
+      dataSource: [assistantId, 'prev'],
+      headerOffset: 1,
+      isSecondLastMessageFromUser: false,
+    });
+
+    rerender({
+      dataSource: ['m0', 'm1', userId, assistantId],
+      isSecondLastMessageFromUser: true,
+    });
+
+    // User message index 2 sits at virtua row 3 (header row 0 + messages).
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(scrollToIndex).toHaveBeenCalledWith(3, { align: 'start', smooth: true });
   });
 
   it('does not scroll when only the assistant message is appended', () => {
@@ -288,7 +326,7 @@ describe('useConversationScroll — pin behavior', () => {
       // simulate viewport mount via prev offset seeding: first call seeds prev=0
       result.current.onScrollOffset(0);
       // then user scrolls up (negative delta)
-      result.current.onScrollOffset(-50);
+      result.current.onScrollOffset(-50, true);
     });
 
     // Simulate a later layout bump that would have re-fired a scroll before.

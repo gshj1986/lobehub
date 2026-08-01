@@ -159,6 +159,26 @@ export class StreamingHandler {
     return this.output;
   }
 
+  getContentParts(): MessageContentPart[] {
+    return [...this.contentParts];
+  }
+
+  getReasoningParts(): MessageContentPart[] {
+    return [...this.reasoningParts];
+  }
+
+  getThinkingContent(): string {
+    return this.thinkingContent;
+  }
+
+  hasContentImages(): boolean {
+    return this.contentParts.some((part) => part.type === 'image');
+  }
+
+  hasReasoningImages(): boolean {
+    return this.reasoningParts.some((part) => part.type === 'image');
+  }
+
   /**
    * Get reasoning duration
    */
@@ -464,7 +484,26 @@ export class StreamingHandler {
       },
     }));
 
-    this.tools = this.callbacks.transformToolCalls(processedToolCalls);
+    const resolved = this.callbacks.transformToolCalls(processedToolCalls);
+
+    // Silent-drop guard: the model emitted tool_calls but every name failed to
+    // resolve (e.g. missing `____` prefix the resolver couldn't recover from).
+    // Without this log the operation would finish as "completed without tool
+    // calls" even though the user's intent was lost. See .
+    if (resolved.length < processedToolCalls.length) {
+      const resolvedKeys = new Set(resolved.map((t) => t.id));
+      const unresolved = processedToolCalls
+        .filter((t) => !resolvedKeys.has(t.id))
+        .map((t) => t.function.name);
+      log(
+        '[processFinalToolCalls] unresolved tool_call names messageId=%s, operationId=%s, names=%o',
+        this.context.messageId,
+        this.context.operationId,
+        unresolved,
+      );
+    }
+
+    this.tools = resolved;
     this.isFunctionCall = true;
   }
 
@@ -498,7 +537,7 @@ export class StreamingHandler {
         duration: finalDuration,
         signature: reasoningSignature,
       };
-    } else if (finishData.reasoning?.content) {
+    } else if (finishData.reasoning?.content || reasoningSignature) {
       finalReasoning = {
         ...finishData.reasoning,
         duration: finalDuration,

@@ -33,8 +33,20 @@ interface UserMessageContentPartImage {
   };
   type: 'image_url';
 }
+interface UserMessageContentPartVideo {
+  type: 'video_url';
+  video_url: { url: string };
+}
+interface UserMessageContentPartAudio {
+  audio_url: { url: string };
+  type: 'audio_url';
+}
 
-export type UserMessageContentPart = UserMessageContentPartText | UserMessageContentPartImage;
+export type UserMessageContentPart =
+  | UserMessageContentPartText
+  | UserMessageContentPartImage
+  | UserMessageContentPartVideo
+  | UserMessageContentPartAudio;
 
 export interface OpenAIChatMessage {
   /**
@@ -47,7 +59,15 @@ export interface OpenAIChatMessage {
    * @deprecated
    */
   function_call?: OpenAIFunctionCall;
+  model?: string;
   name?: string;
+  provider?: string;
+  reasoning?: {
+    content?: string;
+    duration?: number;
+    signature?: string;
+  };
+  reasoning_content?: string;
   /**
    * Role
    * @description Role of the message sender
@@ -95,10 +115,19 @@ export interface ChatStreamPayload {
    * @default 0
    */
   presence_penalty?: number;
+  preserveThinking?: boolean;
   /**
    * @default openai
    */
   provider?: string;
+  /**
+   * Responses API reasoning configuration.
+   */
+  reasoning?: {
+    effort?: string;
+    mode?: 'standard' | 'pro';
+    summary?: string;
+  };
   response_format?: ChatResponseFormat;
   responseMode?: 'stream' | 'json';
   /**
