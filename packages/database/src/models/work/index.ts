@@ -1,6 +1,7 @@
 import {
   type DeleteDocumentWorkParams,
   type DeleteTaskWorkParams,
+  type DeleteWorkParams,
   isWorkSkillProvider,
   type RegisterDocumentWorkParams,
   type RegisterExternalWorkParams,
@@ -17,7 +18,7 @@ import type { WorkContext } from './context';
 import { registerDocumentWork } from './document';
 import { registerExternalWork } from './external';
 import { findFileWorkVersionByToolCall, registerFileWork } from './file';
-import { normalizeGithubToolResult } from './githubToolResult';
+import { normalizeGithubShellToolResult, normalizeGithubToolResult } from './githubToolResult';
 import { normalizeLinearToolResult } from './linearToolResult';
 import * as queries from './queries';
 import { registerTaskWork } from './task';
@@ -89,11 +90,33 @@ export class WorkModel {
     return this.registerExternal({ ...operation.params, toolIdentifier: provider });
   };
 
+  /**
+   * Register a github Work from a heterogeneous / device SHELL tool result
+   * (codex `command_execution`, claude-code `Bash`, lobe-local-system
+   * `runCommand`) that ran `gh issue|pr create/edit`. Unlike
+   * {@link handleSkillToolResult} the version keeps the REAL producing tool as
+   * its identifier (codex / claude-code / …) instead of a skill provider —
+   * the github identity still lands on the same `owner/repo#number` Work row,
+   * so both surfaces dedupe together.
+   */
+  registerShellGithubResult = async (
+    params: SkillToolResultWorkInput & { toolIdentifier: string },
+  ): Promise<WorkItem | null> => {
+    const { toolIdentifier, ...rest } = params;
+
+    const operation = normalizeGithubShellToolResult(rest);
+    if (!operation) return null;
+
+    return this.registerExternal({ ...operation.params, toolIdentifier });
+  };
+
   deleteDocumentWork = (params: DeleteDocumentWorkParams): Promise<void> =>
     writes.deleteDocumentWork(this.ctx, params);
 
   deleteTaskWork = (params: DeleteTaskWorkParams): Promise<void> =>
     writes.deleteTaskWork(this.ctx, params);
+
+  deleteWork = (params: DeleteWorkParams): Promise<void> => writes.deleteWork(this.ctx, params);
 
   listByRootOperation = (params: {
     includeFileWorks?: boolean;

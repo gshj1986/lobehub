@@ -12,7 +12,8 @@ import type { ErrorAttribution, ErrorCategory, ErrorSeverity } from './taxonomy'
 export type CloudErrorCode =
   | typeof ChatErrorType.FreePlanLimit
   | typeof ChatErrorType.InsufficientBudgetForModel
-  | typeof ChatErrorType.LobeHubModelDeprecated;
+  | typeof ChatErrorType.LobeHubModelDeprecated
+  | typeof ChatErrorType.SubscriptionPlanLimit;
 
 /** Every code the spec table can classify. */
 export type SpecErrorCode = CloudErrorCode | ILobeAgentRuntimeErrorType;
@@ -191,6 +192,18 @@ export const ERROR_CODE_SPECS: SpecMap = {
     countAsFailure: false,
     description: 'LobeHub Cloud balance is positive but below the model’s estimated cost.',
   },
+  [ChatErrorType.SubscriptionPlanLimit]: {
+    code: ChatErrorType.SubscriptionPlanLimit,
+    numericId: 2903,
+    category: 'quota',
+    severity: 'warning',
+    attribution: 'user',
+    httpStatus: 402,
+    retryable: false,
+    countAsFailure: false,
+    description:
+      'LobeHub Cloud paid-plan allowance reached, or the plan tier does not cover the requested model.',
+  },
 
   // ─── 3xxx Capacity ────────────────────────────────────────────────────
   [AgentRuntimeErrorType.RateLimitExceeded]: {
@@ -304,6 +317,17 @@ export const ERROR_CODE_SPECS: SpecMap = {
     retryable: false,
     countAsFailure: false,
     description: 'Upstream rejected the request as malformed (bad JSON / schema / parameters).',
+  },
+  [AgentRuntimeErrorType.RequestBodyTooLarge]: {
+    code: AgentRuntimeErrorType.RequestBodyTooLarge,
+    numericId: 4006,
+    category: 'request',
+    severity: 'warning',
+    attribution: 'user',
+    httpStatus: 400,
+    retryable: false,
+    countAsFailure: false,
+    description: 'Upstream rejected the serialized request body as too large.',
   },
   // —— Cloud-only (tier 9) ——
   [ChatErrorType.LobeHubModelDeprecated]: {
@@ -431,6 +455,21 @@ export const ERROR_CODE_SPECS: SpecMap = {
       'State-store (Redis / Upstash) read failed: a blocking read (XREAD / BLPOP) aborted because the caller disconnected ("ERR caller gone"), or the operation\'s agent state could not be loaded ("Agent state not found for operation …"). System-side — counts as a failure.',
   },
 
+  [AgentRuntimeErrorType.HarnessJsonParseError]: {
+    code: AgentRuntimeErrorType.HarnessJsonParseError,
+    numericId: 7008,
+    category: 'stream',
+    severity: 'error',
+    attribution: 'harness',
+    httpStatus: 500,
+    // Deterministic: the same corrupt payload re-parses to the same failure, so
+    // a transport retry only re-burns the run's tokens.
+    retryable: false,
+    countAsFailure: true,
+    description:
+      'A harness-side `JSON.parse` threw on data the harness produced or stored ("… in JSON at position N" / "Unexpected end of JSON input") — a serialization bug, not an upstream response.',
+  },
+
   // ─── 8xxx Provider (catch-all) ────────────────────────────────────────
   [AgentRuntimeErrorType.AgentRuntimeError]: {
     code: AgentRuntimeErrorType.AgentRuntimeError,
@@ -542,7 +581,7 @@ export const ERROR_CODE_SPECS: SpecMap = {
     httpStatus: 471,
     retryable: false,
     countAsFailure: false,
-    description: 'Image-generation provider blocked the request due to content policy.',
+    description: 'Provider blocked the request or generated output due to content policy.',
   },
   [AgentRuntimeErrorType.UpstreamGatewayError]: {
     code: AgentRuntimeErrorType.UpstreamGatewayError,
@@ -598,6 +637,17 @@ export const ERROR_CODE_SPECS: SpecMap = {
     countAsFailure: true,
     description:
       'Provider returned a completion with no user-visible content, tool calls, images, or grounding.',
+  },
+  [AgentRuntimeErrorType.ModelRefusal]: {
+    code: AgentRuntimeErrorType.ModelRefusal,
+    numericId: 8015,
+    category: 'provider',
+    severity: 'warning',
+    attribution: 'provider',
+    httpStatus: 471,
+    retryable: false,
+    countAsFailure: false,
+    description: 'Provider explicitly refused to produce an otherwise empty completion.',
   },
 
   // ─── 9xxx Config ──────────────────────────────────────────────────────

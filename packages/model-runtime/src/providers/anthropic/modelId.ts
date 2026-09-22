@@ -169,7 +169,67 @@ export const isThinkingDisplayOmittedByDefaultModel = (model: string): boolean =
   return parsed.family === 'opus' && parsed.majorVersion === 4 && hasMinorVersionAtLeast(parsed, 7);
 };
 
+const CLAUDE_COMMON_EFFORT_LEVELS = new Set(['low', 'medium', 'high']);
+const CLAUDE_5_EFFORT_FAMILIES = ['fable', 'mythos', 'opus', 'sonnet'] as const;
 const EFFORTS_INCOMPATIBLE_WITH_DISABLED_THINKING = new Set(['xhigh', 'max']);
+
+/**
+ * Whether an Anthropic model accepts an `output_config.effort` level.
+ * Unsupported routed values are omitted rather than allowing the provider to reject the request.
+ * @see https://platform.claude.com/docs/en/build-with-claude/effort
+ */
+export const supportsClaudeEffortLevel = (
+  model: string,
+  effort: string | undefined,
+): effort is 'high' | 'low' | 'max' | 'medium' | 'xhigh' => {
+  if (!effort) return false;
+
+  const normalizedModelId = model
+    .trim()
+    .toLowerCase()
+    .replace(/^anthropic\//, '');
+  if (normalizedModelId === 'claude-mythos-preview') {
+    return CLAUDE_COMMON_EFFORT_LEVELS.has(effort) || effort === 'max';
+  }
+
+  const parsed = parseClaudeModelId(model);
+  if (!parsed) return false;
+
+  const isSupportedModel =
+    (parsed.majorVersion === 5 && isClaudeFamily(parsed, CLAUDE_5_EFFORT_FAMILIES)) ||
+    (parsed.majorVersion === 4 &&
+      ((parsed.family === 'opus' &&
+        parsed.minorVersion !== undefined &&
+        parsed.minorVersion >= 5 &&
+        parsed.minorVersion <= 8) ||
+        (parsed.family === 'sonnet' && parsed.minorVersion === 6)));
+  if (!isSupportedModel) return false;
+
+  if (CLAUDE_COMMON_EFFORT_LEVELS.has(effort)) return true;
+  if (effort === 'max') {
+    return !(parsed.majorVersion === 4 && parsed.family === 'opus' && parsed.minorVersion === 5);
+  }
+  if (effort !== 'xhigh') return false;
+
+  return (
+    parsed.majorVersion === 5 ||
+    (parsed.family === 'opus' && parsed.majorVersion === 4 && (parsed.minorVersion ?? 0) >= 7)
+  );
+};
+
+/**
+ * Claude Fable 5.1 / Mythos 5.1 reject forced tool use. `tool_choice` of type `any`
+ * or `tool` returns a 400; keep `auto` (or `none`) and use `strict: true` for schema
+ * enforcement instead. Fable 5 / Mythos 5 still accept forced choice.
+ * @see https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1#forced-tool-use-is-not-supported
+ */
+export const rejectsForcedToolChoice = (model: string): boolean => {
+  const parsed = parseClaudeModelId(model);
+  if (!parsed || !isClaudeFamily(parsed, ['fable', 'mythos'])) return false;
+  if (parsed.majorVersion > 5) return true;
+
+  return parsed.majorVersion === 5 && hasMinorVersionAtLeast(parsed, 1);
+};
 
 /**
  * Claude Opus 5 and later reject `thinking: {type: 'disabled'}` combined with effort `xhigh` or
@@ -200,16 +260,16 @@ export const shouldOmitSamplingParams = (model: string): boolean => {
   return parsed.source !== 'openRouter' || parsed.minorSeparator === '.';
 };
 
+/**
+ * Anthropic dropped assistant prefill on "Claude 4.6 and later models" — any family,
+ * with no upper minor bound — and every Claude 5 model. Requests ending with an
+ * assistant turn return a 400 on these models.
+ * @see https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prefill-claudes-response
+ */
 export const shouldDropUnsupportedClaudeAssistantPrefill = (model: string): boolean => {
   const parsed = parseClaudeModelId(model);
   if (!parsed || parsed.source === 'openRouter') return false;
   if (parsed.majorVersion >= 5) return true;
 
-  return (
-    parsed.majorVersion === 4 &&
-    isClaudeFamily(parsed, ['opus', 'sonnet']) &&
-    parsed.minorVersion !== undefined &&
-    parsed.minorVersion >= 6 &&
-    parsed.minorVersion <= 8
-  );
+  return parsed.majorVersion === 4 && hasMinorVersionAtLeast(parsed, 6);
 };

@@ -1,11 +1,10 @@
+import type { SFSymbol } from '@lobechat/electron-client-ipc';
 import {
   type ActionIconGroupEvent,
   type ActionIconGroupItemType,
-  type DropdownItem,
   type GenericItemType,
 } from '@lobehub/ui';
-import { createRawModal, showContextMenu } from '@lobehub/ui';
-import { App } from 'antd';
+import { toast } from '@lobehub/ui/base-ui';
 import isEqual from 'fast-deep-equal';
 import { type MouseEvent, type ReactNode } from 'react';
 import { useCallback, useMemo, useRef } from 'react';
@@ -14,18 +13,18 @@ import { useTranslation } from 'react-i18next';
 import { MSG_CONTENT_CLASSNAME } from '@/features/Conversation/ChatItem/components/MessageContent';
 import { resolveHeteroErroredStepId } from '@/features/Conversation/Error/heterogeneous';
 import { usePermission } from '@/hooks/usePermission';
+import { showContextMenu } from '@/libs/contextMenu';
+import type { NativeContextMenuItem } from '@/libs/contextMenu/types';
 import { useSessionStore } from '@/store/session';
 import { sessionSelectors } from '@/store/session/selectors';
 import { useUserStore } from '@/store/user';
 import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 
-import { type ShareModalProps } from '../components/ShareMessageModal';
-import ShareMessageModal from '../components/ShareMessageModal';
+import { openShareMessageModal } from '../components/ShareMessageModal';
 import {
   createStore,
   dataSelectors,
   messageStateSelectors,
-  Provider,
   useConversationStore,
   useConversationStoreApi,
 } from '../store';
@@ -36,6 +35,7 @@ interface ActionMenuItem extends ActionIconGroupItemType {
   children?: { key: string; label: ReactNode }[];
   disable?: boolean;
   popupClassName?: string;
+  sfSymbol?: SFSymbol;
 }
 
 type MenuItem = ActionMenuItem | { type: 'divider' };
@@ -55,7 +55,7 @@ export const useChatItemContextMenu = ({
   topic,
 }: UseChatItemContextMenuProps) => {
   const contextMenuMode = useUserStore(userGeneralSettingsSelectors.contextMenuMode);
-  const { message } = App.useApp();
+
   const { t } = useTranslation('common');
   const { allowed: canCreateContent } = usePermission('create_content');
   const { allowed: canEditContent } = usePermission('edit_own_content');
@@ -92,7 +92,6 @@ export const useChatItemContextMenu = ({
     regenerateUserMessage,
     regenerateAssistantMessage,
     translateMessage,
-    startMessageTTS,
     delAndRegenerateMessage,
     copyMessage,
     openThreadCreator,
@@ -106,7 +105,6 @@ export const useChatItemContextMenu = ({
     s.regenerateUserMessage,
     s.regenerateAssistantMessage,
     s.translateMessage,
-    s.startMessageTTS,
     s.delAndRegenerateMessage,
     s.copyMessage,
     s.openThreadCreator,
@@ -136,7 +134,6 @@ export const useChatItemContextMenu = ({
       regenerate,
       share,
       translate,
-      tts,
     } = actionsBar;
 
     const withPermission = (items: MenuItem[]) =>
@@ -146,7 +143,7 @@ export const useChatItemContextMenu = ({
             if ('type' in item && item.type === 'divider') return item;
             if (['edit', 'del'].includes(String(item.key))) return { ...item, disabled: !canEdit };
             if (
-              ['branching', 'delAndRegenerate', 'regenerate', 'translate', 'tts'].includes(
+              ['branching', 'delAndRegenerate', 'regenerate', 'translate'].includes(
                 String(item.key),
               )
             ) {
@@ -167,17 +164,7 @@ export const useChatItemContextMenu = ({
 
       if (!inThread && !isGroupSession && isDevMode) list.push(branching);
 
-      list.push(
-        divider,
-        tts,
-        translate,
-        divider,
-        share,
-        divider,
-        regenerate,
-        delAndRegenerate,
-        del,
-      );
+      list.push(divider, translate, divider, share, divider, regenerate, delAndRegenerate, del);
 
       return withPermission(list.filter(Boolean) as MenuItem[]);
     }
@@ -209,7 +196,7 @@ export const useChatItemContextMenu = ({
 
       if (!inThread && isDevMode) list.push(branching);
 
-      list.push(divider, tts, translate, divider, regenerate, del);
+      list.push(divider, translate, divider, regenerate, del);
 
       return withPermission(list.filter(Boolean) as MenuItem[]);
     }
@@ -231,26 +218,14 @@ export const useChatItemContextMenu = ({
     const item = getMessage();
     if (!item || item.role !== 'assistant') return;
 
-    createRawModal(
-      (props: ShareModalProps) => (
-        <Provider
-          createStore={() => {
-            const state = storeApi.getState();
-            return createStore({
-              context: state.context,
-              hooks: state.hooks,
-              skipFetch: state.skipFetch,
-            });
-          }}
-        >
-          <ShareMessageModal {...props} />
-        </Provider>
-      ),
-      {
-        message: item,
-      },
-      { onCloseKey: 'onCancel', openKey: 'open' },
-    );
+    openShareMessageModal(item, () => {
+      const state = storeApi.getState();
+      return createStore({
+        context: state.context,
+        hooks: state.hooks,
+        skipFetch: state.skipFetch,
+      });
+    });
   }, [getMessage, storeApi]);
 
   const handleAction = useCallback(
@@ -266,7 +241,7 @@ export const useChatItemContextMenu = ({
         }
         case 'copy': {
           await copyMessage(id, item.content);
-          message.success(t('copySuccess'));
+          toast.success(t('copySuccess'));
           break;
         }
         case 'expand':
@@ -278,7 +253,7 @@ export const useChatItemContextMenu = ({
         case 'branching': {
           if (!canCreate) break;
           if (!topic) {
-            message.warning(t('branchingRequiresSavedTopic'));
+            toast.warning(t('branchingRequiresSavedTopic'));
             break;
           }
           openThreadCreator(id);
@@ -315,11 +290,6 @@ export const useChatItemContextMenu = ({
           }
           break;
         }
-        case 'tts': {
-          if (!canCreate) break;
-          startMessageTTS(id);
-          break;
-        }
         case 'share': {
           if (!canEdit) break;
           handleShare();
@@ -345,7 +315,6 @@ export const useChatItemContextMenu = ({
       handleShare,
       id,
       inPortalThread,
-      message,
       openThreadCreator,
       regenerateAssistantMessage,
       regenerateUserMessage,
@@ -356,7 +325,6 @@ export const useChatItemContextMenu = ({
       toggleMessageEditing,
       topic,
       translateMessage,
-      startMessageTTS,
     ],
   );
 
@@ -393,7 +361,8 @@ export const useChatItemContextMenu = ({
         key: actionItem.key,
         label: actionItem.label,
         onClick: children ? undefined : handleMenuClick,
-      } satisfies DropdownItem;
+        sfSymbol: actionItem.sfSymbol,
+      } satisfies NativeContextMenuItem;
     });
   }, [handleMenuClick, menuItems]);
 

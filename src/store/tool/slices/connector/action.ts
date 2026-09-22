@@ -1,5 +1,10 @@
+import { isDesktop } from '@lobechat/const';
+import { isLocalOrPrivateUrl } from '@lobechat/utils';
+
+import { getActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
 import type { ConnectorToolPermission } from '@/database/schemas';
 import { lambdaClient } from '@/libs/trpc/client';
+import { mcpService } from '@/services/mcp';
 import type { StoreSetter } from '@/store/types';
 
 import type { ToolStore } from '../../store';
@@ -19,8 +24,32 @@ export class ConnectorActionImpl {
     this.#get = get;
   }
 
+  /**
+   * Whether the scope captured when a request was issued is still the active
+   * one. Connector lists are workspace-scoped server-side (the request carries
+   * the active workspace as a header), but the store bucket is a single global
+   * one — so a late response must not be written after the scope moved on.
+   *
+   * Booting straight into a workspace URL is exactly that case: the tree mounts
+   * once in personal context before the URL→store sync resolves the slug, so a
+   * personal `list` query is already in flight when the workspace switch fires
+   * its own. Whichever lands last wins, and when that is the personal one the
+   * workspace's own tools vanish from the tool picker for the rest of the
+   * session. In the open-source build there are no workspaces and
+   * `getActiveWorkspaceId()` is always `null`, so this is a no-op.
+   *
+   * Dropping a response deliberately leaves the one-shot init flag alone
+   * rather than marking the bucket loaded: a scope change remounts the
+   * workspace context slot's subtree, so the consumers gated on that flag
+   * re-issue their fetch under the new scope and the discarded result is not
+   * one anybody still needs.
+   */
+  #isStillInScope = (scope: string | null): boolean => getActiveWorkspaceId() === scope;
+
   fetchConnectors = async (): Promise<void> => {
+    const scope = getActiveWorkspaceId();
     const data = await lambdaClient.connector.list.query();
+    if (!this.#isStillInScope(scope)) return;
     this.#set({ connectors: data as any, isConnectorsInit: true }, false, 'fetchConnectors');
   };
 
@@ -39,12 +68,14 @@ export class ConnectorActionImpl {
 
   /**
    * Fetch every agent-owned connector across all agents (the flat aggregate for
-   * the unified connector-settings page, LOBE-11682). Each row is enriched
+   * the unified connector-settings page). Each row is enriched
    * server-side with the owning agent's title/avatar. Scope-correct: a workspace
-   * context only returns that workspace's agent connectors (LOBE-11681).
+   * context only returns that workspace's agent connectors.
    */
   fetchAgentBoundConnectors = async (): Promise<void> => {
+    const scope = getActiveWorkspaceId();
     const data = await lambdaClient.connector.listAgentBound.query();
+    if (!this.#isStillInScope(scope)) return;
     this.#set(
       { agentBoundConnectors: data as any, isAgentBoundInit: true },
       false,
@@ -57,7 +88,9 @@ export class ConnectorActionImpl {
    * tab. Stored keyed by agentId.
    */
   fetchAgentConnectors = async (agentId: string): Promise<void> => {
+    const scope = getActiveWorkspaceId();
     const data = await lambdaClient.connector.listByAgent.query({ agentId });
+    if (!this.#isStillInScope(scope)) return;
     this.#set(
       (s) => ({
         agentConnectors: { ...s.agentConnectors, [agentId]: data as any },
@@ -104,14 +137,20 @@ export class ConnectorActionImpl {
     return lambdaClient.connector.getForEdit.query({ id });
   };
 
+  /**
+   * Create (or idempotently update) a connector. `isNew` is the server's
+   * knowledge of whether the row was freshly created — callers that roll back
+   * on a later sync failure must use it instead of a client-side cache check,
+   * which is unreliable before `fetchConnectors` has completed.
+   */
   createConnector = async (
     params: Parameters<typeof lambdaClient.connector.create.mutate>[0],
-  ): Promise<string> => {
+  ): Promise<{ id: string; isNew: boolean }> => {
     this.#set({ connectorCreating: true }, false, 'createConnector/start');
     try {
       const created = await lambdaClient.connector.create.mutate(params);
       await this.fetchConnectors();
-      return created.id;
+      return { id: created.id, isNew: created.isNew };
     } finally {
       this.#set({ connectorCreating: false }, false, 'createConnector/end');
     }
@@ -161,7 +200,8 @@ export class ConnectorActionImpl {
       'syncConnectorTools/start',
     );
     try {
-      await lambdaClient.connector.syncTools.mutate({ id });
+      const syncedLocally = await this.#syncLocalConnectorTools(id);
+      if (!syncedLocally) await lambdaClient.connector.syncTools.mutate({ id });
       await this.#refreshConnectorLists();
     } finally {
       this.#set(
@@ -170,6 +210,75 @@ export class ConnectorActionImpl {
         'syncConnectorTools/end',
       );
     }
+  };
+
+  /**
+   * Desktop-only install/refresh path for connectors the cloud server cannot
+   * reach itself: stdio MCP (must spawn on this machine) and local/private
+   * network HTTP endpoints. The server-side `syncTools` would try to connect
+   * FROM the cloud and fail with "Failed to start MCP service process" /
+   * "fetch failed" (#16533), so the client lists the tools locally (via the
+   * Electron main process, same path Test Connection uses) and reports them
+   * through `syncToolsFromClientById`.
+   *
+   * Returns false when the connector is server-reachable (public HTTP) or when
+   * not running in desktop — the caller falls back to the server-side sync.
+   */
+  #syncLocalConnectorTools = async (id: string): Promise<boolean> => {
+    if (!isDesktop) return false;
+
+    // `getForEdit` returns the decrypted user-set credentials (bearer/apikey/
+    // header) needed to connect locally. OAuth2 tokens are machine-managed and
+    // never leave the server — but OAuth against a localhost endpoint would be
+    // server-unreachable anyway, so that combination stays on the server path.
+    const detail = await lambdaClient.connector.getForEdit.query({ id });
+    const isStdio = detail.mcpConnectionType === 'stdio';
+    const isLocalHttp = !!detail.mcpServerUrl && isLocalOrPrivateUrl(detail.mcpServerUrl);
+    if (!isStdio && !isLocalHttp) return false;
+
+    let api: Array<{ description?: string; name: string; parameters?: Record<string, unknown> }>;
+    if (isStdio) {
+      if (!detail.mcpStdioConfig?.command) throw new Error('Connector is missing stdio config');
+      const manifest = await mcpService.getStdioMcpServerManifest({
+        args: detail.mcpStdioConfig.args ?? [],
+        command: detail.mcpStdioConfig.command,
+        env: detail.mcpStdioConfig.env ?? undefined,
+        name: detail.identifier,
+      });
+      api = manifest.api ?? [];
+    } else {
+      const credentials = detail.credentials;
+      const auth =
+        credentials?.type === 'bearer'
+          ? { token: credentials.token, type: 'bearer' as const }
+          : credentials?.type === 'apikey'
+            ? { token: credentials.apiKey, type: 'bearer' as const }
+            : undefined;
+      // Custom headers live in metadata.customHeaders; legacy rows stored them
+      // as a 'header' credential — merge both, mirroring the server-side
+      // buildConnectorMcpParams.
+      const headerCreds = credentials?.type === 'header' ? credentials.headers : undefined;
+      const customHeaders = detail.metadata?.customHeaders as Record<string, string> | undefined;
+      const headers =
+        headerCreds || customHeaders ? { ...headerCreds, ...customHeaders } : undefined;
+      const manifest = await mcpService.getStreamableMcpServerManifest({
+        auth,
+        headers,
+        identifier: detail.identifier,
+        url: detail.mcpServerUrl!,
+      });
+      api = manifest.api ?? [];
+    }
+
+    await lambdaClient.connector.syncToolsFromClientById.mutate({
+      id,
+      tools: api.map((a) => ({
+        description: a.description,
+        inputSchema: a.parameters,
+        toolName: a.name,
+      })),
+    });
+    return true;
   };
 
   disconnectConnector = async (id: string): Promise<void> => {

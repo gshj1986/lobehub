@@ -1,7 +1,7 @@
 'use client';
 
-import { Flexbox, Icon, Skeleton, TextArea } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
+import { Flexbox, Icon, TextArea } from '@lobehub/ui';
+import { Button, Skeleton } from '@lobehub/ui/base-ui';
 import { cssVar } from 'antd-style';
 import { SmilePlus } from 'lucide-react';
 import { memo, useState } from 'react';
@@ -16,6 +16,10 @@ import { truncateByWeightedLength } from '@/utils/textLength';
 
 import { usePageEditorStore } from './store';
 import { usePageEditable } from './usePageEditable';
+
+export const getTitleTextAreaInteractionProps = (canEdit: boolean) => ({
+  readOnly: !canEdit,
+});
 
 const TitleSection = memo(() => {
   const { t } = useTranslation('file');
@@ -110,12 +114,12 @@ const TitleSection = memo(() => {
 
       {/* Title Input */}
       {showTitleSkeleton ? (
-        <Skeleton.Button active style={{ height: 44, width: 320 }} />
+        <Skeleton height={44} width={320} />
       ) : (
         <TextArea
           autoSize={{ minRows: 1 }}
-          disabled={!canEdit}
           placeholder={t('pageEditor.titlePlaceholder')}
+          {...getTitleTextAreaInteractionProps(canEdit)}
           value={title}
           variant={'borderless'}
           style={{

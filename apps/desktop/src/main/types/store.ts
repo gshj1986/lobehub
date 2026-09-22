@@ -1,13 +1,19 @@
 import type {
+  CompletionSoundSettings,
   DataSyncConfig,
   ImessageBridgeConfig,
   NetworkProxySettings,
   UpdateChannel,
+  WindowsShellMode,
 } from '@lobechat/electron-client-ipc';
 import type { HeteroSessionDirPref } from '@lobechat/types';
 
 export interface ElectronMainStore {
   appTrayVisible: boolean;
+  completionSound?: Partial<Omit<CompletionSoundSettings, 'systemSoundDisabled'>> & {
+    directory?: string;
+    files?: { file: string; mime: string }[];
+  };
   dataSyncConfig: DataSyncConfig;
   /**
    * Explicit completion state for the multi-step desktop onboarding flow.
@@ -21,9 +27,7 @@ export interface ElectronMainStore {
     lastRefreshAt?: number;
     refreshToken?: string;
   };
-  gatewayDeviceDescription: string;
   gatewayDeviceId: string;
-  gatewayDeviceName: string;
   gatewayEnabled: boolean;
   gatewayUrl: string;
   /**
@@ -45,6 +49,14 @@ export interface ElectronMainStore {
   heteroSessionDirPrefs: Record<string, HeteroSessionDirPref>;
   heteroTracingEnabled: boolean;
   imessageBridgeConfigs: ImessageBridgeConfig[];
+  /**
+   * Per-account memory of the workspace slug the main window was last in
+   * (account = OIDC subject; no entry = personal). The next launch of that
+   * account boots the window straight at `/{slug}` — no post-load redirect.
+   * Written blind: a slug gone stale (membership revoked elsewhere) still
+   * boots, and the renderer settles the real scope from there.
+   */
+  lastWorkspaceSlugByAccount: Record<string, string>;
   locale: string;
   localFileWorkspaceRoots: string[];
   networkProxy: NetworkProxySettings;
@@ -53,6 +65,8 @@ export interface ElectronMainStore {
   storagePath: string;
   themeMode: 'dark' | 'light' | 'system';
   updateChannel: UpdateChannel;
+  /** Shell used for agent command execution on Windows (ignored elsewhere). */
+  windowsShellMode: WindowsShellMode;
 }
 
 export type StoreKey = keyof ElectronMainStore;

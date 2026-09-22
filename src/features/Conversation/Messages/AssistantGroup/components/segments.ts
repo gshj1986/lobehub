@@ -3,12 +3,12 @@ import type { AssistantGroupSegment } from '@lobechat/conversation-flow';
 import { LOADING_FLAT } from '@/const/message';
 
 import type { RenderableAssistantContentBlock } from './types';
+import type { WorkflowExpandLevel, WorkflowExpandLevelDefault } from './WorkflowCollapse';
 
 export type GroupRenderSegment = AssistantGroupSegment<RenderableAssistantContentBlock>;
 
-export const countFoldedProcessSteps = (segments: GroupRenderSegment[]): number => {
+export const countAssistantLlmCalls = (segments: GroupRenderSegment[]): number => {
   const assistantBlockIds = new Set<string>();
-  let toolCount = 0;
 
   for (const segment of segments) {
     if (segment.kind === 'answer') {
@@ -18,11 +18,10 @@ export const countFoldedProcessSteps = (segments: GroupRenderSegment[]): number 
 
     for (const block of segment.blocks) {
       assistantBlockIds.add(block.id);
-      toolCount += block.tools?.length ?? 0;
     }
   }
 
-  return assistantBlockIds.size + toolCount;
+  return assistantBlockIds.size;
 };
 
 export const hasRenderableFinalAnswer = (segments: GroupRenderSegment[]): boolean =>
@@ -67,3 +66,18 @@ export const shouldFoldProcess = ({
   (!isLatestItem || !!hasFinalAnswer) &&
   !isGenerating &&
   processSegments.some((segment) => segment.kind === 'workflow');
+
+/**
+ * Merge the per-surface expand override with the user's streaming preference.
+ * An explicit override always wins; the setting only fills a streaming phase
+ * nobody asked for.
+ */
+export const resolveWorkflowExpandLevel = (
+  override: WorkflowExpandLevelDefault | undefined,
+  streamingSetting: WorkflowExpandLevel,
+): WorkflowExpandLevelDefault => {
+  const explicit =
+    typeof override === 'string' ? { completion: override, streaming: override } : override;
+
+  return { ...explicit, streaming: explicit?.streaming ?? streamingSetting };
+};
